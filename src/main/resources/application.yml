@@ -1,0 +1,31 @@
+server:
+  port: 8080
+
+spring:
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 50MB
+      max-request-size: 50MB
+      # Servlet 3.0 默认解析器，无需额外配置 CommonsMultipartResolver
+
+# 文件服务自定义配置
+file:
+  upload:
+    base-path: /file-upload-storage/   # 本地存储根路径（以 / 开头表示应用所在盘符的根目录，如 C:\file-upload-storage）
+  ftp:
+    host: 127.0.0.1
+    port: 21
+    username: user0
+    password: 123456789
+    basePath: /
+  oss:
+    endpoint: https://oss-cn-hangzhou.aliyuncs.com
+    access-key-id: LTAI5xxx
+    access-key-secret: xxx
+    bucket-name: my-bucket
+    basePath: files/
+
+logging:
+  level:
+    com.example.fileupload: DEBUG
