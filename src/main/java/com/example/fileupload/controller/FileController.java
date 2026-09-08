@@ -6,7 +6,8 @@ import com.example.fileupload.model.Result;
 import com.example.fileupload.model.UploadResult;
 import com.example.fileupload.service.FileStorageService;
 import com.example.fileupload.service.RequestUploadProcessor;
-import com.example.fileupload.strategy.FtpUploadStrategy;
+import com.example.fileupload.strategy.UploadStrategy;
+import com.example.fileupload.strategy.UploadStrategyFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -35,15 +36,15 @@ public class FileController {
 
     private final RequestUploadProcessor processor;
     private final FileStorageService fileStorageService;
-    private final FtpUploadStrategy ftpStrategy;
+    private final UploadStrategyFactory strategyFactory;
 
     @Value("${file.upload.base-path:/testPath/}")
     private String localBasePath;
 
-    public FileController(RequestUploadProcessor processor, FileStorageService fileStorageService, FtpUploadStrategy ftpStrategy) {
+    public FileController(RequestUploadProcessor processor, FileStorageService fileStorageService, UploadStrategyFactory strategyFactory) {
         this.processor = processor;
         this.fileStorageService = fileStorageService;
-        this.ftpStrategy = ftpStrategy;
+        this.strategyFactory = strategyFactory;
     }
 
     // ==================== 1. 上传接口 ====================
@@ -103,41 +104,23 @@ public class FileController {
                     (org.springframework.web.multipart.MultipartHttpServletRequest) request;
 
             // 取 files 字段（可传多个文件）
-            java.util.List<MultipartFile> files = new java.util.ArrayList<>();
-            for (String fieldName : new String[]{"files"}) {
-                MultipartFile f = multipartRequest.getFile(fieldName);
-                if (f != null && !f.isEmpty()) {
-                    files.add(f);
-                }
+            java.util.List<MultipartFile> files = multipartRequest.getFiles("files");
+            if (files.isEmpty()) {
+                return Result.error(400, "未找到有效文件");
             }
 
-            List<FileInfo> results;
-            // FTP 走专用批量路径（复用连接），其他走通用处理器
-            if (uploadType == UploadType.FTP) {
-                java.util.List<UploadResult> uploadResults = ftpStrategy.batchUpload(files);
+            // 统一走策略接口的 batchUpload，各策略自行决定优化方式
+            UploadStrategy strategy = strategyFactory.getStrategy(uploadType);
+            java.util.List<UploadResult> uploadResults = strategy.batchUpload(files);
 
-                // 检查是否有失败项
-                int successCount = uploadResults.size();
-                if (successCount < files.size()) {
-                    log.warn("[BATCH] FTP 上传部分失败: 成功{}/{}", successCount, files.size());
-                }
-
-                results = new java.util.ArrayList<>(uploadResults.size());
-                for (int i = 0; i < uploadResults.size(); i++) {
-                    UploadResult r = uploadResults.get(i);
-                    MultipartFile mf = files.get(i);
-                    FileInfo info = buildFileInfo(mf, uploadType, r);
-                    info.setUploadedBy(uploadedBy);
-                    fileStorageService.save(info);
-                    results.add(info);
-                }
-            } else {
-                results = processor.process(multipartRequest,
-                        java.util.Collections.singletonList("files"), uploadType);
-                for (FileInfo info : results) {
-                    info.setUploadedBy(uploadedBy);
-                    fileStorageService.save(info);
-                }
+            java.util.List<FileInfo> results = new java.util.ArrayList<>(uploadResults.size());
+            for (int i = 0; i < uploadResults.size(); i++) {
+                UploadResult r = uploadResults.get(i);
+                MultipartFile mf = files.get(i);
+                FileInfo info = buildFileInfo(mf, uploadType, r);
+                info.setUploadedBy(uploadedBy);
+                fileStorageService.save(info);
+                results.add(info);
             }
 
             return Result.success(results);

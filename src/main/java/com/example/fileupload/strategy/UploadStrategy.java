@@ -4,6 +4,8 @@ import com.example.fileupload.model.UploadResult;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 文件上传策略接口 — 每种存储方式实现此接口
@@ -50,4 +52,22 @@ public interface UploadStrategy {
      * @return 文件字节数组，不存在时返回 null
      */
     byte[] download(String fileKey) throws IOException;
+
+    /**
+     * 批量上传多个文件（默认实现逐个调用单文件上传）
+     * <p>
+     * 各策略可 override 以优化连接复用（如 FTP 复用单个 TCP 连接）。
+     *
+     * @param files 待上传文件列表
+     * @return 各文件的上传结果
+     */
+    default List<UploadResult> batchUpload(List<MultipartFile> files) throws IOException {
+        List<UploadResult> results = new ArrayList<>(files.size());
+        for (MultipartFile file : files) {
+            if (file != null && !file.isEmpty()) {
+                results.add(upload(file.getBytes(), file.getOriginalFilename()));
+            }
+        }
+        return results;
+    }
 }

@@ -70,8 +70,9 @@ class FileControllerIntegrationTest {
     }
 
     @Test
-    @DisplayName("UPLOAD: 成功上传到 OSS Mock")
-    void should_upload_to_oss_mock() throws Exception {
+    @Disabled("需要真实 OSS 凭证")
+    @DisplayName("UPLOAD: 成功上传到 OSS")
+    void should_upload_to_oss() throws Exception {
         MockMultipartFile file = new MockMultipartFile("file", "archive.zip", "application/zip", ZIP_BYTES);
 
         mockMvc.perform(multipart("/api/files/upload")
@@ -216,6 +217,7 @@ class FileControllerIntegrationTest {
     }
 
     @Test
+    @Disabled("需要真实 OSS 凭证")
     @DisplayName("QUERY: 按存储类型过滤")
     void should_filter_by_storage_type() throws Exception {
         byte[] c = PNG_BYTES.clone();

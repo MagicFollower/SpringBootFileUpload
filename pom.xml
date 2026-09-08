@@ -55,11 +55,11 @@
             <version>3.9.0</version>
         </dependency>
 
-        <!-- Apache HttpClient for mock OSS simulation -->
+        <!-- Aliyun OSS SDK for real OSS storage -->
         <dependency>
-            <groupId>org.apache.httpcomponents</groupId>
-            <artifactId>httpclient</artifactId>
-            <version>4.5.14</version>
+            <groupId>com.aliyun.oss</groupId>
+            <artifactId>aliyun-sdk-oss</artifactId>
+            <version>3.17.4</version>
         </dependency>
     </dependencies>
 

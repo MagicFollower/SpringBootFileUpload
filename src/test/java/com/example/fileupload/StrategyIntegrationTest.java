@@ -92,19 +92,17 @@ class StrategyIntegrationTest {
         assertNull(ftpStrategy.download(result.getFileKey()));
     }
 
-    // ==================== OSS Mock 策略 ====================
+    // ==================== OSS 策略（需要真实 OSS 凭证）====================
 
     @Test
-    @DisplayName("OSS-MOCK: upload → download → delete")
+    @Disabled("Requires real Aliyun OSS credentials in application.yml")
+    @DisplayName("OSS: upload → download → delete")
     void oss_strategy_lifecycle() throws IOException {
         MultipartFile file = createMockZipFile();
-
-        int beforeSize = ossStrategy.getMockSize();
 
         UploadResult result = ossStrategy.upload(file, "archive.zip");
         assertNotNull(result);
         assertEquals(UploadType.OSS.getCode(), result.getStorageType());
-        assertEquals(beforeSize + 1, ossStrategy.getMockSize());
 
         // 下载
         byte[] data = ossStrategy.download(result.getFileKey());
@@ -113,8 +111,8 @@ class StrategyIntegrationTest {
 
         // 删除
         assertTrue(ossStrategy.delete(result.getFileKey()));
-        assertEquals(beforeSize, ossStrategy.getMockSize());
 
+        // 再下载应为 null
         assertNull(ossStrategy.download(result.getFileKey()));
     }
 

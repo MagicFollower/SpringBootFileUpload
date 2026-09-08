@@ -22,7 +22,7 @@
 ### 核心功能
 
 1. **多存储后端支持**：同一套 API 支持本地磁盘、FTP、阿里云 OSS 三种存储方式，通过 `uploadType` 参数路由
-2. **文件安全校验**：魔数验证（PNG/JPG/GIF/PDF 文件头）+ 后缀白名单，防止恶意文件上传
+2. **文件安全校验**：魔数验证（PNG/JPG/GIF/BMP/PDF/ZIP/RAR 文件头）+ 后缀白名单（图片/文档/压缩包等 17 种），防止恶意文件上传
 3. **唯一文件名生成**：UUID + 原始文件名，自动处理碰撞重试
 4. **批量上传**：FTP 场景下复用单个 TCP 连接，减少握手开销
 5. **完整 CRUD**：上传、下载、删除、分页查询、关键词搜索、多维度过滤
@@ -72,8 +72,9 @@
                 ▼
         ┌──────────────┐
         │FtpBatchUploader│
-        │ ThreadLocal    │
-        │ Connection Pool│
+        │ ThreadLocal      │
+        │ Connection Pool  │
+        │ 单文件/批量/目录 │
         └──────────────┘
 ```
 
@@ -81,21 +82,21 @@
 
 | 组件 | 职责 |
 |------|------|
-| `UploadStrategy` | 策略接口，定义 `upload/download/delete/getUploadType` |
+| `UploadStrategy` | 策略接口，定义 `upload(MultipartFile)/upload(byte[])/download/delete/getUploadType` |
 | `LocalUploadStrategy` | 本地磁盘存储，`@PostConstruct` 解析盘符根目录 |
 | `FtpUploadStrategy` | FTP 存储，单文件走真实连接，批量复用 `FtpBatchUploader` |
 | `OssUploadStrategy` | OSS Mock 存储（内存 Map），可扩展为真实阿里云 SDK |
 | `UploadStrategyFactory` | 工厂类，自动收集所有 `UploadStrategy` Bean，按 `UploadType` 分发 |
 | `RequestUploadProcessor` | 门面层，封装完整的上传流程：解析→校验→路由→组装 |
-| `FileTypeValidator` | 魔数校验 + 后缀白名单，防止 `.exe` 伪装成 `.png` |
+| `FileTypeValidator` | 魔数校验（PNG/JPG/GIF/BMP/PDF/ZIP/RAR）+ 后缀白名单（17 种），防止 `.exe` 伪装成 `.png` |
 | `FileStorageService` | 内存级元数据存储（ConcurrentHashMap），替代数据库 |
-| `FtpBatchUploader` | FTP 批量上传工具，ThreadLocal 连接池，单连接多文件 |
+| `FtpBatchUploader` | FTP 批量上传工具，ThreadLocal 连接池，支持单文件/批量/目录递归上传 |
 
 ### 关键设计决策
 
 1. **路径语义**：配置中 `base-path` 以 `/` 开头表示应用所在盘符根目录（Windows: `C:\`，Linux: `/`），不以 `/` 开头则为相对当前工作目录
 2. **FileInfo 字段**：移除 `url`，新增 `fullPath`（含盘符绝对路径）和 `relativePath`（含 base-path 目录名的相对路径）
-3. **字节数组优先**：`RequestUploadProcessor` 一次性调用 `file.getBytes()`，后续校验和上传都基于内存字节，避免 Windows 下 Tomcat 临时文件双重锁定
+3. **字节数组优先**：`RequestUploadProcessor` 一次性调用 `file.getBytes()`，后续校验和上传都基于内存字节，避免 Windows 下 Tomcat 临时文件双重锁定；`UploadStrategy` 接口提供 `upload(byte[], originalFilename)` 默认方法
 4. **FTP 错误分类**：统一通过 `classifyFtpError(replyCode, reply, operation)` 将 FTP 原始回复码转换为用户友好的中文提示
 
 ---
@@ -313,7 +314,7 @@ BUILD SUCCESS
 |--------|--------|----------|
 | `FileControllerIntegrationTest` | 16 | REST API 全链路（上传/下载/删除/查询/Mock） |
 | `FileStorageServiceTest` | 10 | 内存存储 CRUD、搜索、分页 |
-| `FileTypeValidatorTest` | 13 | 魔数校验、后缀白名单、边界情况 |
+| `FileTypeValidatorTest` | 13 | 魔数校验（PNG/JPG/GIF/BMP/PDF/ZIP/RAR）、后缀白名单（17 种）、边界情况 |
 | `StrategyIntegrationTest` | 6 | Local/OSS 策略生命周期（FTP 已禁用） |
 | `UploadTypeTest` | 3 | 枚举转换、fromCode 容错 |
 

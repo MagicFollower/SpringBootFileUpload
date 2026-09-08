@@ -84,10 +84,7 @@ public class FtpUploadStrategy implements UploadStrategy {
             String fullPath = resolveRemotePath(fileKey);
             boolean deleted = client.deleteFile(fullPath);
             if (!deleted) {
-                String reply = client.getReplyString();
-                if ("550".equals(reply != null && reply.length() >= 3 ? reply.substring(0, 3) : "")) {
-                    throw new IOException("FTP 权限不足或文件不存在: " + reply);
-                }
+                log.warn("[FTP] delete failed for {}, reply: {}", fullPath, client.getReplyString());
             }
             return deleted;
         } finally {
@@ -126,6 +123,7 @@ public class FtpUploadStrategy implements UploadStrategy {
      * @param files          MultipartFile 列表（调用方已从 multipartRequest 取出）
      * @return 各文件的 UploadResult 列表
      */
+    @Override
     public List<UploadResult> batchUpload(List<MultipartFile> files) throws IOException {
         if (files == null || files.isEmpty()) {
             throw new IllegalArgumentException("批量上传列表不能为空");
