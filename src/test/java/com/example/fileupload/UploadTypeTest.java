@@ -35,6 +35,6 @@ class UploadTypeTest {
     void should_have_description() {
         assertEquals("本地磁盘存储", UploadType.LOCAL.getDesc());
         assertEquals("FTP服务器", UploadType.FTP.getDesc());
-        assertEquals("阿里云OSS", UploadType.OSS.getDesc());
+        assertEquals("MinIO对象存储", UploadType.OSS.getDesc());
     }
 }

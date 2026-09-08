@@ -1,10 +1,9 @@
 package com.example.fileupload.strategy;
 
-import com.aliyun.oss.OSS;
-import com.aliyun.oss.OSSClientBuilder;
-import com.aliyun.oss.model.OSSObject;
-import org.apache.commons.codec.digest.DigestUtils;
+import com.example.fileupload.enums.UploadType;
 import com.example.fileupload.model.UploadResult;
+import io.minio.*;
+import org.apache.commons.codec.digest.DigestUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -13,57 +12,67 @@ import org.springframework.web.multipart.MultipartFile;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
-import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.UUID;
 
 /**
- * 阿里云 OSS 上传策略（真实实现）
+ * MinIO 对象存储上传策略
  * <p>
- * 使用 aliyun-sdk-oss 的 OSSClient 执行 putObject / getObject / deleteObject。
+ * 使用 MinIO Java SDK 的 MinioClient 执行 putObject / getObject / removeObject。
  * 客户端生命周期由 Spring 管理（@PostConstruct 创建，@PreDestroy 关闭）。
+ * <p>
+ * URL 格式：urlPrefix + "/" + objectKey（不含 bucketName，呈现为正常路径格式）。
+ * 若需外部可直接访问该 URL，请将 urlPrefix 配置为反向代理地址（如 Nginx 代理到 MinIO bucket）。
  */
 @Component
 public class OssUploadStrategy implements UploadStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(OssUploadStrategy.class);
 
-    @Value("${file.oss.endpoint:https://oss-cn-hangzhou.aliyuncs.com}")
+    @Value("${file.oss.endpoint:http://127.0.0.1:9000}")
     private String endpoint;
 
-    @Value("${file.oss.access-key-id:}")
-    private String accessKeyId;
+    @Value("${file.oss.access-key:minioadmin}")
+    private String accessKey;
 
-    @Value("${file.oss.access-key-secret:}")
-    private String accessKeySecret;
+    @Value("${file.oss.secret-key:minioadmin}")
+    private String secretKey;
 
     @Value("${file.oss.bucket-name:my-bucket}")
     private String bucketName;
 
-    @Value("${file.oss.basePath:files/}")
-    private String ossBasePath;
+    @Value("${file.oss.base-path:files/}")
+    private String basePath;
 
-    private OSS ossClient;
+    @Value("${file.oss.url-prefix:${file.oss.endpoint}}")
+    private String urlPrefix;
+
+    private MinioClient minioClient;
 
     @PostConstruct
     public void init() {
-        if (accessKeyId == null || accessKeyId.isEmpty()
-                || accessKeySecret == null || accessKeySecret.isEmpty()) {
-            log.warn("[OSS] access-key-id or access-key-secret is empty, OSSClient will NOT be initialized. "
-                    + "Please configure file.oss.access-key-id and file.oss.access-key-secret in application.yml");
+        if (accessKey == null || accessKey.isEmpty()
+                || secretKey == null || secretKey.isEmpty()) {
+            log.warn("[MinIO] access-key or secret-key is empty, MinioClient will NOT be initialized. "
+                    + "Please configure file.oss.access-key and file.oss.secret-key in application.yml");
             return;
         }
-        ossClient = new OSSClientBuilder().build(endpoint, accessKeyId, accessKeySecret);
-        log.info("[OSS] client initialized: endpoint={}, bucket={}", endpoint, bucketName);
+        minioClient = MinioClient.builder()
+                .endpoint(endpoint)
+                .credentials(accessKey, secretKey)
+                .build();
+        log.info("[MinIO] client initialized: endpoint={}, bucket={}, urlPrefix={}", endpoint, bucketName, urlPrefix);
+
+        // 启动时自动创建 bucket（若不存在）
+        ensureBucketExists();
     }
 
     @PreDestroy
     public void destroy() {
-        if (ossClient != null) {
-            ossClient.shutdown();
-            log.info("[OSS] client shut down");
-        }
+        // MinioClient 无需显式关闭（内部使用 OkHttp，随 JVM 回收）
+        log.info("[MinIO] bean destroyed");
     }
 
     @Override
@@ -75,18 +84,28 @@ public class OssUploadStrategy implements UploadStrategy {
     public UploadResult upload(byte[] bytes, String originalFilename) throws IOException {
         ensureClientAvailable();
         String saveName = UUID.randomUUID().toString().replace("-", "") + "_" + originalFilename;
-        String objectKey = ossBasePath + saveName;
+        String objectKey = normalizeBasePath() + saveName;
 
-        ossClient.putObject(bucketName, objectKey, new java.io.ByteArrayInputStream(bytes));
+        try (InputStream is = new ByteArrayInputStream(bytes)) {
+            minioClient.putObject(
+                    PutObjectArgs.builder()
+                            .bucket(bucketName)
+                            .object(objectKey)
+                            .stream(is, bytes.length, -1)
+                            .build()
+            );
+        } catch (Exception e) {
+            throw new IOException("[MinIO] upload failed: " + e.getMessage(), e);
+        }
 
         UploadResult result = new UploadResult();
-        result.setStorageType(com.example.fileupload.enums.UploadType.OSS.getCode());
+        result.setStorageType(UploadType.OSS.getCode());
         result.setFileKey(saveName);
-        result.setUrl(endpoint + "/" + bucketName + "/" + objectKey);
+        result.setUrl(buildUrl(objectKey));
         result.setSize(bytes.length);
         result.setMd5(DigestUtils.md5Hex(bytes));
 
-        log.info("[OSS] uploaded={}, objectKey={}", originalFilename, objectKey);
+        log.info("[MinIO] uploaded={}, objectKey={}", originalFilename, objectKey);
         return result;
     }
 
@@ -94,13 +113,18 @@ public class OssUploadStrategy implements UploadStrategy {
     public boolean delete(String fileKey) throws IOException {
         if (fileKey == null || fileKey.isEmpty()) return false;
         ensureClientAvailable();
-        String objectKey = ossBasePath + fileKey;
+        String objectKey = normalizeBasePath() + fileKey;
         try {
-            ossClient.deleteObject(bucketName, objectKey);
-            log.info("[OSS] deleted, objectKey={}", objectKey);
+            minioClient.removeObject(
+                    RemoveObjectArgs.builder()
+                            .bucket(bucketName)
+                            .object(objectKey)
+                            .build()
+            );
+            log.info("[MinIO] deleted, objectKey={}", objectKey);
             return true;
         } catch (Exception e) {
-            log.error("[OSS] delete failed, objectKey={}", objectKey, e);
+            log.error("[MinIO] delete failed, objectKey={}", objectKey, e);
             return false;
         }
     }
@@ -109,33 +133,84 @@ public class OssUploadStrategy implements UploadStrategy {
     public byte[] download(String fileKey) throws IOException {
         if (fileKey == null || fileKey.isEmpty()) return null;
         ensureClientAvailable();
-        String objectKey = ossBasePath + fileKey;
-        try {
-            OSSObject obj = ossClient.getObject(bucketName, objectKey);
-            try (InputStream is = obj.getObjectContent();
-                 ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-                byte[] buf = new byte[4096];
-                int len;
-                while ((len = is.read(buf)) != -1) {
-                    baos.write(buf, 0, len);
-                }
-                log.info("[OSS] downloaded, objectKey={}", objectKey);
-                return baos.toByteArray();
+        String objectKey = normalizeBasePath() + fileKey;
+        try (InputStream is = minioClient.getObject(
+                GetObjectArgs.builder()
+                        .bucket(bucketName)
+                        .object(objectKey)
+                        .build());
+             java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream()) {
+            byte[] buf = new byte[4096];
+            int len;
+            while ((len = is.read(buf)) != -1) {
+                baos.write(buf, 0, len);
             }
+            log.info("[MinIO] downloaded, objectKey={}", objectKey);
+            return baos.toByteArray();
         } catch (Exception e) {
-            log.warn("[OSS] download failed, objectKey={}", objectKey, e);
+            log.warn("[MinIO] download failed, objectKey={}", objectKey, e);
             return null;
         }
     }
 
     @Override
-    public com.example.fileupload.enums.UploadType getUploadType() {
-        return com.example.fileupload.enums.UploadType.OSS;
+    public UploadType getUploadType() {
+        return UploadType.OSS;
     }
 
+    // ==================== 私有辅助方法 ====================
+
     private void ensureClientAvailable() {
-        if (ossClient == null) {
-            throw new IllegalStateException("OSSClient 未初始化，请检查 file.oss.access-key-id / access-key-secret 配置");
+        if (minioClient == null) {
+            throw new IllegalStateException("MinioClient 未初始化，请检查 file.oss.access-key / secret-key 配置");
+        }
+    }
+
+    /**
+     * 规范化 basePath：确保以 "/" 开头且不以 "/" 结尾
+     * 例如 "files/" → "/files"，"/files/" → "/files"，"/files" → "/files"
+     */
+    private String normalizeBasePath() {
+        String bp = basePath;
+        if (bp == null || bp.isEmpty()) return "/";
+        if (!bp.startsWith("/")) bp = "/" + bp;
+        if (bp.endsWith("/")) bp = bp.substring(0, bp.length() - 1);
+        return bp + "/";
+    }
+
+    /**
+     * 构建不含 bucketName 的文件访问 URL
+     * 格式：urlPrefix/objectKey
+     */
+    private String buildUrl(String objectKey) {
+        String prefix = urlPrefix;
+        if (prefix.endsWith("/")) prefix = prefix.substring(0, prefix.length() - 1);
+        return prefix + objectKey;
+    }
+
+    /**
+     * 启动时检查 bucket 是否存在，不存在则自动创建
+     */
+    private void ensureBucketExists() {
+        try {
+            boolean exists = minioClient.bucketExists(
+                    BucketExistsArgs.builder()
+                            .bucket(bucketName)
+                            .build()
+            );
+            if (!exists) {
+                minioClient.makeBucket(
+                        MakeBucketArgs.builder()
+                                .bucket(bucketName)
+                                .build()
+                );
+                log.info("[MinIO] bucket '{}' created", bucketName);
+            } else {
+                log.info("[MinIO] bucket '{}' already exists", bucketName);
+            }
+        } catch (Exception e) {
+            log.warn("[MinIO] failed to check/create bucket '{}': {}. "
+                    + "MinIO server may not be running — operations will fail until it is available.", bucketName, e.getMessage());
         }
     }
 }

@@ -70,8 +70,8 @@ class FileControllerIntegrationTest {
     }
 
     @Test
-    @Disabled("需要真实 OSS 凭证")
-    @DisplayName("UPLOAD: 成功上传到 OSS")
+    @Disabled("需要真实 MinIO 服务")
+    @DisplayName("UPLOAD: 成功上传到 MinIO")
     void should_upload_to_oss() throws Exception {
         MockMultipartFile file = new MockMultipartFile("file", "archive.zip", "application/zip", ZIP_BYTES);
 
@@ -217,7 +217,7 @@ class FileControllerIntegrationTest {
     }
 
     @Test
-    @Disabled("需要真实 OSS 凭证")
+    @Disabled("需要真实 MinIO 服务")
     @DisplayName("QUERY: 按存储类型过滤")
     void should_filter_by_storage_type() throws Exception {
         byte[] c = PNG_BYTES.clone();

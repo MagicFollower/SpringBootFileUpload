@@ -7,7 +7,7 @@ public enum UploadType {
 
     LOCAL("local", "本地磁盘存储"),
     FTP("ftp", "FTP服务器"),
-    OSS("oss", "阿里云OSS");
+    OSS("oss", "MinIO对象存储");
 
     private final String code;
     private final String desc;

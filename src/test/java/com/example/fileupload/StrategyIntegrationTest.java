@@ -92,10 +92,10 @@ class StrategyIntegrationTest {
         assertNull(ftpStrategy.download(result.getFileKey()));
     }
 
-    // ==================== OSS 策略（需要真实 OSS 凭证）====================
+    // ==================== MinIO 策略（需要真实 MinIO 服务）====================
 
     @Test
-    @Disabled("Requires real Aliyun OSS credentials in application.yml")
+    @Disabled("Requires real MinIO server in application.yml")
     @DisplayName("OSS: upload → download → delete")
     void oss_strategy_lifecycle() throws IOException {
         MultipartFile file = createMockZipFile();

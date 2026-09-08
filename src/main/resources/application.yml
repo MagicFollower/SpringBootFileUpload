@@ -20,11 +20,12 @@ file:
     password: 123456789
     basePath: /
   oss:
-    endpoint: https://oss-cn-hangzhou.aliyuncs.com
-    access-key-id: LTAI5xxx
-    access-key-secret: xxx
+    endpoint: http://127.0.0.1:9000
+    access-key: minioadmin
+    secret-key: minioadmin
     bucket-name: my-bucket
-    basePath: files/
+    base-path: files/
+    url-prefix: http://127.0.0.1:9000   # 文件访问 URL 前缀（不含 bucketName，可配置为反向代理地址）
 
 logging:
   level:
