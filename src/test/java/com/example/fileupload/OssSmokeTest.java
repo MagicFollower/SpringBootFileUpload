@@ -1,0 +1,393 @@
+package com.example.fileupload;
+
+import com.example.fileupload.enums.UploadType;
+import com.example.fileupload.model.UploadResult;
+import com.example.fileupload.service.FileStorageService;
+import com.example.fileupload.strategy.OssUploadStrategy;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.hamcrest.Matchers.containsString;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+/**
+ * MinIO (OSS) 完整冒烟测试
+ * <p>
+ * 需要 application.yml 中配置可用的 MinIO 服务（file.oss.endpoint / access-key / secret-key / bucket-name）。
+ * 覆盖：策略层 + REST API 层的单文件上传/下载、批量上传、删除、错误处理全链路。
+ *
+ * <h2>测试用例清单（10 个）</h2>
+ * <table border="1">
+ *   <tr><th>编号</th><th>层级</th><th>场景</th><th>测试内容</th></tr>
+ *   <tr><td>#1</td><td>策略层</td><td>单文件上传</td><td>storageType / fileKey / url / size / md5 全字段校验</td></tr>
+ *   <tr><td>#2</td><td>策略层</td><td>下载</td><td>上传内容 vs 下载内容字节级比对</td></tr>
+ *   <tr><td>#3</td><td>策略层</td><td>生命周期</td><td>上传 → 下载 → 删除 → 验证不可下载</td></tr>
+ *   <tr><td>#4</td><td>策略层</td><td>批量上传</td><td>3 文件（JPG/PNG/BMP）逐文件上传并校验</td></tr>
+ *   <tr><td>#5</td><td>策略层</td><td>批量 + 下载</td><td>批量上传后逐个下载，字节级比对</td></tr>
+ *   <tr><td>#6</td><td>策略层</td><td>批量 + 删除</td><td>批量上传后逐个删除并验证不可下载</td></tr>
+ *   <tr><td>#7</td><td>REST API</td><td>单文件全链路</td><td>上传 → 下载 → 按 ID 查询 → 按类型过滤</td></tr>
+ *   <tr><td>#8</td><td>REST API</td><td>批量全链路</td><td>批量上传 3 文件 → 逐个下载 → 元数据验证</td></tr>
+ *   <tr><td>#9</td><td>策略层</td><td>错误处理</td><td>null / 空串 / 不存在的 fileKey</td></tr>
+ *   <tr><td>#10</td><td>REST API</td><td>错误处理</td><td>非法后缀 .exe 拒绝 + 未知类型拒绝</td></tr>
+ * </table>
+ */
+@SpringBootTest
+@AutoConfigureMockMvc
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+class OssSmokeTest {
+
+    /** 合法 PNG 文件头（8 字节） */
+    private static final byte[] PNG_BYTES = {
+            (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
+    };
+
+    /** 合法 JPG 文件头（4 字节） */
+    private static final byte[] JPG_BYTES = {
+            (byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0
+    };
+
+    /** 合法 BMP 文件头（2 字节） */
+    private static final byte[] BMP_BYTES = {
+            (byte) 0x42, (byte) 0x4D
+    };
+
+    /** 合法 ZIP 文件头（4 字节） */
+    private static final byte[] ZIP_BYTES = {
+            0x50, 0x4B, 0x03, 0x04
+    };
+
+    @Autowired private OssUploadStrategy ossStrategy;
+    @Autowired private FileStorageService fileStorageService;
+    @Autowired private MockMvc mockMvc;
+    @Autowired private ObjectMapper objectMapper;
+
+    /** 记录每个测试上传的 fileKey，用于 @AfterEach 尽力清理 MinIO */
+    private final List<String> uploadedFileKeys = new ArrayList<>();
+
+    @BeforeEach
+    void setUp() {
+        fileStorageService.clear();
+        uploadedFileKeys.clear();
+    }
+
+    @AfterEach
+    void tearDown() {
+        for (String key : uploadedFileKeys) {
+            try {
+                ossStrategy.delete(key);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    // ============================================================
+    // Part A: 策略层 — 单文件上传 & 下载
+    // ============================================================
+
+    @Test
+    @Order(1)
+    @DisplayName("[策略层] 单文件上传：返回值完整校验（含 md5）")
+    void strategy_single_upload_should_return_valid_result() throws IOException {
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "smoke_single.png", "image/png", PNG_BYTES);
+
+        UploadResult result = ossStrategy.upload(file, "smoke_single.png");
+
+        assertNotNull(result, "上传结果不应为 null");
+        assertEquals(UploadType.OSS.getCode(), result.getStorageType(), "storageType 应为 oss");
+        assertNotNull(result.getFileKey(), "fileKey 不应为 null");
+        assertTrue(result.getFileKey().contains("smoke_single.png"), "fileKey 应包含原始文件名");
+        assertNotNull(result.getUrl(), "OSS url 不应为 null");
+        assertTrue(result.getUrl().startsWith("http://"), "url 应以 http:// 开头");
+        assertTrue(result.getUrl().contains("/files/"), "url 应包含 basePath 路径");
+        assertEquals(PNG_BYTES.length, result.getSize(), "文件大小应匹配");
+        assertNotNull(result.getMd5(), "md5 不应为 null");
+        assertFalse(result.getMd5().isEmpty(), "md5 不应为空串");
+
+        uploadedFileKeys.add(result.getFileKey());
+    }
+
+    @Test
+    @Order(2)
+    @DisplayName("[策略层] 下载：内容完整性校验（字节级比对）")
+    void strategy_download_should_return_identical_content() throws IOException {
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "smoke_dl.png", "image/png", PNG_BYTES);
+        UploadResult result = ossStrategy.upload(file, "smoke_dl.png");
+        uploadedFileKeys.add(result.getFileKey());
+
+        byte[] downloaded = ossStrategy.download(result.getFileKey());
+
+        assertNotNull(downloaded, "下载结果不应为 null");
+        assertEquals(PNG_BYTES.length, downloaded.length, "下载文件大小应匹配");
+        assertArrayEquals(PNG_BYTES, downloaded, "下载内容应与上传内容完全一致");
+    }
+
+    @Test
+    @Order(3)
+    @DisplayName("[策略层] 上传 → 下载 → 删除 → 验证不可下载")
+    void strategy_upload_download_delete_lifecycle() throws IOException {
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "smoke_lifecycle.png", "image/png", PNG_BYTES);
+        UploadResult result = ossStrategy.upload(file, "smoke_lifecycle.png");
+
+        // 确认存在
+        byte[] before = ossStrategy.download(result.getFileKey());
+        assertNotNull(before, "上传后应能下载");
+        assertArrayEquals(PNG_BYTES, before);
+
+        // 删除（MinIO 有完整权限，应始终成功）
+        boolean deleted = ossStrategy.delete(result.getFileKey());
+        assertTrue(deleted, "MinIO 删除应返回 true");
+
+        // 删除后不可下载
+        byte[] after = ossStrategy.download(result.getFileKey());
+        assertNull(after, "删除成功后下载应返回 null");
+    }
+
+    // ============================================================
+    // Part B: 策略层 — 批量上传
+    // ============================================================
+
+    @Test
+    @Order(4)
+    @DisplayName("[策略层] 批量上传 3 文件（JPG/PNG/BMP）")
+    void strategy_batch_upload_should_succeed_for_all_files() throws IOException {
+        List<MockMultipartFile> files = new ArrayList<>();
+        files.add(new MockMultipartFile("files", "batch_a.jpg", "image/jpeg", JPG_BYTES));
+        files.add(new MockMultipartFile("files", "batch_b.png", "image/png", PNG_BYTES));
+        files.add(new MockMultipartFile("files", "batch_c.bmp", "image/bmp", BMP_BYTES));
+
+        List<UploadResult> results = ossStrategy.batchUpload(new ArrayList<>(files));
+
+        assertEquals(3, results.size(), "应返回 3 个结果");
+        for (int i = 0; i < results.size(); i++) {
+            UploadResult r = results.get(i);
+            assertEquals(UploadType.OSS.getCode(), r.getStorageType());
+            assertNotNull(r.getFileKey());
+            assertNotNull(r.getUrl());
+            assertNotNull(r.getMd5());
+            assertTrue(r.getSize() > 0, "文件大小应大于 0");
+            uploadedFileKeys.add(r.getFileKey());
+        }
+    }
+
+    @Test
+    @Order(5)
+    @DisplayName("[策略层] 批量上传后逐个下载：内容完整性校验")
+    void strategy_batch_upload_then_download_should_match() throws IOException {
+        // 构造带真实魔数的扩展内容
+        byte[] contentA = "EXTRA_JPG_DATA".getBytes();
+        byte[] jpgFull = new byte[JPG_BYTES.length + contentA.length];
+        System.arraycopy(JPG_BYTES, 0, jpgFull, 0, JPG_BYTES.length);
+        System.arraycopy(contentA, 0, jpgFull, JPG_BYTES.length, contentA.length);
+
+        byte[] contentB = "EXTRA_PNG_DATA".getBytes();
+        byte[] pngFull = new byte[PNG_BYTES.length + contentB.length];
+        System.arraycopy(PNG_BYTES, 0, pngFull, 0, PNG_BYTES.length);
+        System.arraycopy(contentB, 0, pngFull, PNG_BYTES.length, contentB.length);
+
+        List<MockMultipartFile> files = new ArrayList<>();
+        files.add(new MockMultipartFile("files", "dl_a.jpg", "image/jpeg", jpgFull));
+        files.add(new MockMultipartFile("files", "dl_b.png", "image/png", pngFull));
+
+        List<UploadResult> results = ossStrategy.batchUpload(new ArrayList<>(files));
+        assertEquals(2, results.size());
+        for (UploadResult r : results) uploadedFileKeys.add(r.getFileKey());
+
+        // 逐个下载并字节级比对
+        byte[] downA = ossStrategy.download(results.get(0).getFileKey());
+        assertArrayEquals(jpgFull, downA, "第 1 个文件内容应一致");
+
+        byte[] downB = ossStrategy.download(results.get(1).getFileKey());
+        assertArrayEquals(pngFull, downB, "第 2 个文件内容应一致");
+    }
+
+    @Test
+    @Order(6)
+    @DisplayName("[策略层] 批量上传后逐个删除并验证不可下载")
+    void strategy_batch_upload_then_delete_all() throws IOException {
+        List<MockMultipartFile> files = new ArrayList<>();
+        files.add(new MockMultipartFile("files", "del_a.jpg", "image/jpeg", JPG_BYTES));
+        files.add(new MockMultipartFile("files", "del_b.png", "image/png", PNG_BYTES));
+
+        List<UploadResult> results = ossStrategy.batchUpload(new ArrayList<>(files));
+        assertEquals(2, results.size());
+
+        for (UploadResult r : results) {
+            assertTrue(ossStrategy.delete(r.getFileKey()), "删除应返回 true");
+            assertNull(ossStrategy.download(r.getFileKey()), "删除后应不可下载");
+        }
+    }
+
+    // ============================================================
+    // Part C: REST API 层 — 单文件完整生命周期
+    // ============================================================
+
+    @Test
+    @Order(7)
+    @DisplayName("[REST API] OSS 单文件上传 → 下载 → 元数据查询")
+    void api_single_oss_upload_download_query() throws Exception {
+        // 1. 上传
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "api_single.jpg", "image/jpeg", JPG_BYTES);
+
+        MvcResult uploadResult = mockMvc.perform(multipart("/api/files/upload")
+                        .file(file)
+                        .param("uploadType", "oss")
+                        .param("uploadedBy", "smoke-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.storageType").value("oss"))
+                .andExpect(jsonPath("$.data.originalFilename").value("api_single.jpg"))
+                .andExpect(jsonPath("$.data.uploadedBy").value("smoke-tester"))
+                .andExpect(jsonPath("$.data.fileKey").isNotEmpty())
+                .andReturn();
+
+        String fileKey = readJson(uploadResult, "data.fileKey");
+        String id = readJson(uploadResult, "data.id");
+        uploadedFileKeys.add(fileKey);
+
+        // 2. 下载 — 验证 Content-Disposition 和 HTTP 200
+        mockMvc.perform(get("/api/files/download")
+                        .param("fileKey", fileKey)
+                        .param("uploadType", "oss"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", containsString("api_single.jpg")));
+
+        // 3. 按 ID 查询元数据
+        mockMvc.perform(get("/api/files/" + id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(id))
+                .andExpect(jsonPath("$.data.storageType").value("oss"))
+                .andExpect(jsonPath("$.data.originalFilename").value("api_single.jpg"));
+
+        // 4. 按 OSS 存储类型过滤查询
+        mockMvc.perform(get("/api/files").param("storageType", "oss"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1));
+    }
+
+    // ============================================================
+    // Part D: REST API 层 — 批量上传
+    // ============================================================
+
+    @Test
+    @Order(8)
+    @DisplayName("[REST API] OSS 批量上传 3 文件 → 逐个下载校验")
+    void api_batch_upload_then_download_all() throws Exception {
+        // 1. 批量上传
+        MockMultipartFile f1 = new MockMultipartFile("files", "api_b1.jpg", "image/jpeg", JPG_BYTES);
+        MockMultipartFile f2 = new MockMultipartFile("files", "api_b2.png", "image/png", PNG_BYTES);
+        MockMultipartFile f3 = new MockMultipartFile("files", "api_b3.bmp", "image/bmp", BMP_BYTES);
+
+        MvcResult uploadResult = mockMvc.perform(multipart("/api/files/upload/batch")
+                        .file(f1).file(f2).file(f3)
+                        .param("uploadType", "oss"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data.length()").value(3))
+                .andReturn();
+
+        String responseBody = uploadResult.getResponse().getContentAsString();
+
+        // 提取每个文件的 fileKey
+        List<String> fileKeys = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            fileKeys.add(objectMapper.readTree(responseBody)
+                    .get("data").get(i).get("fileKey").asText());
+        }
+        uploadedFileKeys.addAll(fileKeys);
+
+        // 2. 逐个下载并验证 Content-Disposition
+        String[] expectedNames = {"api_b1.jpg", "api_b2.png", "api_b3.bmp"};
+        for (int i = 0; i < 3; i++) {
+            mockMvc.perform(get("/api/files/download")
+                            .param("fileKey", fileKeys.get(i))
+                            .param("uploadType", "oss"))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Content-Disposition", containsString(expectedNames[i])));
+        }
+
+        // 3. 验证元数据已存储（查询列表应能看到 3 条 OSS 记录）
+        mockMvc.perform(get("/api/files").param("storageType", "oss"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(3));
+    }
+
+    // ============================================================
+    // Part E: 错误处理 & 边界场景
+    // ============================================================
+
+    @Test
+    @Order(9)
+    @DisplayName("[策略层] 错误处理：null / 空字符串 / 不存在的 fileKey")
+    void strategy_error_handling_for_invalid_file_keys() throws IOException {
+        // null fileKey
+        assertNull(ossStrategy.download(null), "download(null) 应返回 null");
+        assertFalse(ossStrategy.delete(null), "delete(null) 应返回 false");
+
+        // 空字符串
+        assertNull(ossStrategy.download(""), "download('') 应返回 null");
+        assertFalse(ossStrategy.delete(""), "delete('') 应返回 false");
+
+        // 不存在的文件下载应返回 null
+        assertNull(ossStrategy.download("nonexistent_smoke_test_file.png"),
+                "不存在的文件下载应返回 null");
+        // MinIO removeObject 是幂等操作：删除不存在的对象不抛异常，返回 true（S3 标准行为）
+        assertTrue(ossStrategy.delete("nonexistent_smoke_test_file.png"),
+                "MinIO 删除不存在的文件应返回 true（幂等语义）");
+    }
+
+    @Test
+    @Order(10)
+    @DisplayName("[REST API] 错误处理：非法后缀被拒绝 / 未知类型被拒绝")
+    void api_error_handling_for_invalid_requests() throws Exception {
+        // 非法后缀 .exe
+        MockMultipartFile exe = new MockMultipartFile(
+                "file", "hack.exe", "application/x-dosexec", new byte[10]);
+        mockMvc.perform(multipart("/api/files/upload")
+                        .file(exe)
+                        .param("uploadType", "oss"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 未知上传类型
+        MockMultipartFile png = new MockMultipartFile(
+                "file", "t.png", "image/png", PNG_BYTES);
+        mockMvc.perform(multipart("/api/files/upload")
+                        .file(png)
+                        .param("uploadType", "unknown"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    // ============================================================
+    // 辅助方法
+    // ============================================================
+
+    /**
+     * 从 MockMvc 响应的 JSON 中按路径读取字符串值
+     */
+    private String readJson(MvcResult result, String jsonPath) throws Exception {
+        String body = result.getResponse().getContentAsString();
+        com.fasterxml.jackson.databind.JsonNode node = objectMapper.readTree(body);
+        for (String segment : jsonPath.split("\\.")) {
+            node = node.get(segment);
+        }
+        return node.asText();
+    }
+}
