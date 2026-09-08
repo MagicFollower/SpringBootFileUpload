@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: ""
+title: 基于策略模式的多后端文件上传服务
+scope:
+    - src/
+    - pom.xml
+    - .gitignore
+    - README.md
+source_files: []
+depends_on: []
+related_to: []

@@ -1,0 +1,19 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-09-08T15:31:55Z"
+modules:
+    "":
+        dir_name: 基于策略模式的多后端文件上传服务
+        title: 基于策略模式的多后端文件上传服务
+        scope:
+            - src/
+            - pom.xml
+            - .gitignore
+            - README.md
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
