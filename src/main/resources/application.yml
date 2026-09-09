@@ -27,6 +27,12 @@ file:
     base-path: files/
     url-prefix: http://127.0.0.1:9000   # 文件访问 URL 前缀（不含 bucketName，可配置为反向代理地址）
 
+# kkFileView 在线预览配置
+preview:
+  kk-file-view:
+    server-address: http://127.0.0.1:8012  # kkFileView 服务地址
+    watermark-txt: ""                       # 水印文本（空则不加水印）
+
 logging:
   level:
     com.example.fileupload: DEBUG

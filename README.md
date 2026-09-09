@@ -360,6 +360,10 @@ public class S3UploadStrategy implements UploadStrategy {
 
 然后在 `upload()` 中使用 `OSSClient.putObject()` 替代内存 Map。
 
+### 文件在线预览（kkFileView 对接）
+
+项目已集成 [kkFileView 4.4.0](https://gitee.com/kekingcn/file-online-preview/releases#release-v4.4.0) 实现浏览器端文件在线预览，支持 LOCAL / FTP / MinIO 三种存储后端。详见 [文件预览方案文档](docs/文件预览方案/README.md)。
+
 ---
 
 ## 常见问题

@@ -5,6 +5,7 @@ import com.example.fileupload.model.FileInfo;
 import com.example.fileupload.model.Result;
 import com.example.fileupload.model.UploadResult;
 import com.example.fileupload.service.FileStorageService;
+import com.example.fileupload.service.FilePreviewService;
 import com.example.fileupload.service.RequestUploadProcessor;
 import com.example.fileupload.strategy.UploadStrategy;
 import com.example.fileupload.strategy.UploadStrategyFactory;
@@ -37,14 +38,17 @@ public class FileController {
     private final RequestUploadProcessor processor;
     private final FileStorageService fileStorageService;
     private final UploadStrategyFactory strategyFactory;
+    private final FilePreviewService previewService;
 
     @Value("${file.upload.base-path:/testPath/}")
     private String localBasePath;
 
-    public FileController(RequestUploadProcessor processor, FileStorageService fileStorageService, UploadStrategyFactory strategyFactory) {
+    public FileController(RequestUploadProcessor processor, FileStorageService fileStorageService,
+                          UploadStrategyFactory strategyFactory, FilePreviewService previewService) {
         this.processor = processor;
         this.fileStorageService = fileStorageService;
         this.strategyFactory = strategyFactory;
+        this.previewService = previewService;
     }
 
     // ==================== 1. 上传接口 ====================
@@ -291,7 +295,73 @@ public class FileController {
                 .orElse(Result.error(404, "文件不存在: " + id));
     }
 
-    // ==================== 5. Mock 数据初始化接口 ====================
+    // ==================== 5. 在线预览接口（kkFileView 对接） ====================
+
+    /**
+     * GET /api/files/previewUrl?id=xxx
+     * <p>
+     * 生成 kkFileView 在线预览 URL。
+     * 前端拿到该 URL 后 window.open() 即可在浏览器中预览文件。
+     *
+     * @param id 文件在 FileStorageService 中的 ID
+     * @return kkFileView 完整预览 URL
+     */
+    @GetMapping("/previewUrl")
+    public Result<String> previewUrl(@RequestParam("id") String id) {
+        try {
+            String previewUrl = previewService.generatePreviewUrl(id);
+            return Result.success(previewUrl);
+        } catch (IllegalArgumentException e) {
+            return Result.error(404, e.getMessage());
+        } catch (Exception e) {
+            log.error("Generate preview URL failed, id={}", id, e);
+            return Result.error(500, "生成预览链接失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * GET /api/files/previewFile?fileKey=xxx&uploadType=local&fullfilename=report.pdf
+     * <p>
+     * 供 kkFileView 服务器拉取文件流的端点。
+     * 与 download 接口的区别：
+     * <ul>
+     *   <li>Content-Disposition 为 inline（浏览器内展示而非下载）</li>
+     *   <li>Content-Type 根据文件后缀动态设置（kkFileView 依赖此信息识别文件类型）</li>
+     *   <li>通过 fullfilename 参数确保 kkFileView 能正确识别无后缀的下载流</li>
+     * </ul>
+     */
+    @GetMapping("/previewFile")
+    public ResponseEntity<byte[]> previewFile(@RequestParam("fileKey") String fileKey,
+                                              @RequestParam("uploadType") String uploadTypeCode,
+                                              @RequestParam(value = "fullfilename", required = false) String fullFilename) {
+        try {
+            UploadType uploadType = UploadType.fromCode(uploadTypeCode);
+            byte[] data = processor.download(uploadType, fileKey);
+            if (data == null || data.length == 0) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+            }
+
+            // 确定原始文件名：优先用 fullfilename 参数，其次从存储中查找
+            String originalFilename = resolveOriginalFilename(fileKey, uploadTypeCode, fullFilename);
+
+            HttpHeaders headers = new HttpHeaders();
+            // inline 展示（kkFileView 需要直接获取文件流进行转换）
+            headers.setContentDisposition(
+                    org.springframework.http.ContentDisposition.inline()
+                            .filename(originalFilename, java.nio.charset.StandardCharsets.UTF_8)
+                            .build()
+            );
+            headers.setContentType(resolveContentType(originalFilename));
+            headers.setContentLength(data.length);
+
+            return ResponseEntity.ok().headers(headers).body(data);
+        } catch (Exception e) {
+            log.error("File preview failed", e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    // ==================== 6. Mock 数据初始化接口 ====================
 
     /**
      * POST /api/files/mock/init
@@ -307,12 +377,56 @@ public class FileController {
     }
 
     /**
-     * GET /api/files/mock/count
-     * <p>
      * 查看当前 Mock 数据总量。
      */
     @GetMapping("/mock/count")
     public Result<Integer> mockCount() {
         return Result.success(fileStorageService.size());
+    }
+
+    // ==================== 预览辅助方法 ====================
+
+    /**
+     * 解析原始文件名：优先使用 fullfilename 参数，否则从存储中查找
+     */
+    private String resolveOriginalFilename(String fileKey, String uploadTypeCode, String fullFilename) {
+        if (fullFilename != null && !fullFilename.isEmpty()) {
+            return fullFilename;
+        }
+        List<FileInfo> all = fileStorageService.findAll();
+        for (FileInfo fi : all) {
+            if (fi.getFileKey().equals(fileKey) && fi.getStorageType().equalsIgnoreCase(uploadTypeCode)) {
+                return fi.getOriginalFilename();
+            }
+        }
+        return fileKey;
+    }
+
+    /**
+     * 根据文件后缀返回对应的 Content-Type
+     */
+    private MediaType resolveContentType(String filename) {
+        if (filename == null) return MediaType.APPLICATION_OCTET_STREAM;
+        String lower = filename.toLowerCase();
+        if (lower.endsWith(".pdf"))  return MediaType.APPLICATION_PDF;
+        if (lower.endsWith(".png"))  return MediaType.IMAGE_PNG;
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return MediaType.IMAGE_JPEG;
+        if (lower.endsWith(".gif"))  return MediaType.IMAGE_GIF;
+        if (lower.endsWith(".bmp"))  return MediaType.parseMediaType("image/bmp");
+        if (lower.endsWith(".txt"))  return MediaType.TEXT_PLAIN;
+        if (lower.endsWith(".html") || lower.endsWith(".htm")) return MediaType.TEXT_HTML;
+        if (lower.endsWith(".xml"))  return MediaType.APPLICATION_XML;
+        if (lower.endsWith(".json")) return MediaType.APPLICATION_JSON;
+        if (lower.endsWith(".doc"))  return MediaType.parseMediaType("application/msword");
+        if (lower.endsWith(".docx")) return MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        if (lower.endsWith(".xls"))  return MediaType.parseMediaType("application/vnd.ms-excel");
+        if (lower.endsWith(".xlsx")) return MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        if (lower.endsWith(".ppt"))  return MediaType.parseMediaType("application/vnd.ms-powerpoint");
+        if (lower.endsWith(".pptx")) return MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.presentationml.presentation");
+        if (lower.endsWith(".zip"))  return MediaType.parseMediaType("application/zip");
+        if (lower.endsWith(".rar"))  return MediaType.parseMediaType("application/x-rar-compressed");
+        if (lower.endsWith(".mp4"))  return MediaType.parseMediaType("video/mp4");
+        if (lower.endsWith(".mp3"))  return MediaType.parseMediaType("audio/mpeg");
+        return MediaType.APPLICATION_OCTET_STREAM;
     }
 }
